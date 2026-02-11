@@ -1,0 +1,745 @@
+-- ORBIT UTILITY 2026 [PRO EDITION]
+-- AMETHYST / OBSIDIAN UI
+-- Version: 2.6 (Pro)
+
+-- // SERVICES
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
+local Debris = game:GetService("Debris")
+local CoreGui = game:GetService("CoreGui")
+
+-- // CONFIGURATION & THEME
+local THEME = {
+    Background = Color3.fromRGB(10, 10, 15),
+    Panel = Color3.fromRGB(18, 18, 26),
+    Accent = Color3.fromRGB(140, 60, 255), -- Amethyst
+    AccentDark = Color3.fromRGB(90, 30, 180),
+    Gradient1 = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(170, 80, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(100, 40, 200))
+    }),
+    Text = Color3.fromRGB(240, 240, 255),
+    TextDim = Color3.fromRGB(160, 160, 180),
+    Error = Color3.fromRGB(255, 60, 60),
+    Success = Color3.fromRGB(140, 60, 255) -- Changed Green to Amethyst
+}
+
+local SETTINGS = {
+    OrbitSpeed = 15,
+    OrbitRadius = 20,
+    HeightOffset = 3,
+    ScanRate = 1.0, -- Lower is faster scanning
+    ThrowVelocity = 600
+}
+
+-- // PLAYER & UTILS
+local Player = Players.LocalPlayer
+local Mouse = Player:GetMouse()
+local Camera = workspace.CurrentCamera
+
+-- Safe GUI Parent (Exploit Protection)
+local function getGuiParent()
+    return (CoreGui:FindFirstChild("RobloxGui") or Player:WaitForChild("PlayerGui"))
+end
+
+-- Cleanup Old Instances
+for _, v in ipairs(getGuiParent():GetChildren()) do
+    if v.Name == "OrbitUtilityPro" then v:Destroy() end
+end
+
+-- // SOUND ENGINE
+local SFX = {
+    Hover = "rbxassetid://6895079853",
+    Click = "rbxassetid://435186630",
+    Notification = "rbxassetid://4590657391",
+    PowerUp = "rbxassetid://2696683313",
+    Release = "rbxassetid://132944341377293" -- [User Note: This ID is very long, ensure it is correct]
+}
+
+local function PlaySound(id, vol)
+    task.spawn(function()
+        local s = Instance.new("Sound")
+        s.SoundId = id
+        s.Volume = vol or 1
+        s.Parent = SoundService
+        s.PlayOnRemove = true
+        s:Play()
+        s:Destroy()
+    end)
+end
+
+-- // UI LIBRARY (MINIFIED & ENHANCED)
+local UILib = {}
+
+function UILib:AddCorner(instance, radius)
+    local corner = Instance.new("UICorner", instance)
+    corner.CornerRadius = UDim.new(0, radius or 8)
+    return corner
+end
+
+function UILib:AddBreathing(stroke)
+    task.spawn(function()
+        while stroke and stroke.Parent do
+            local t1 = TweenService:Create(stroke, TweenInfo.new(1.5, Enum.EasingStyle.Sine), {Transparency = 0.2})
+            t1:Play()
+            t1.Completed:Wait()
+            local t2 = TweenService:Create(stroke, TweenInfo.new(1.5, Enum.EasingStyle.Sine), {Transparency = 0.7})
+            t2:Play()
+            t2.Completed:Wait()
+        end
+    end)
+end
+
+function UILib:Create(class, props)
+    local obj = Instance.new(class)
+    for k, v in pairs(props) do
+        obj[k] = v
+    end
+    -- Auto Corner & Stroke for specific types could go here, but doing manually for precision
+    return obj
+end
+
+function UILib:Gradient(parent)
+    local g = Instance.new("UIGradient")
+    g.Color = THEME.Gradient1
+    g.Rotation = 45
+    g.Parent = parent
+    return g
+end
+
+function UILib:Ripple(button)
+    local circle = Instance.new("ImageLabel")
+    circle.BackgroundTransparency = 1
+    circle.Image = "rbxassetid://266543268"
+    circle.ImageTransparency = 0.6
+    circle.ImageColor3 = Color3.new(1,1,1)
+    circle.ZIndex = 10
+    circle.Parent = button
+    local x, y = Mouse.X - button.AbsolutePosition.X, Mouse.Y - button.AbsolutePosition.Y
+    circle.Position = UDim2.new(0, x, 0, y)
+    circle.Size = UDim2.new(0, 0, 0, 0)
+    TweenService:Create(circle, TweenInfo.new(0.4), {Size = UDim2.new(0, 300, 0, 300), ImageTransparency = 1}):Play()
+    Debris:AddItem(circle, 0.45)
+end
+
+-- // STATE VARIABLES
+local State = {
+    Orbiting = false,
+    AntiFall = false,
+    Noclip = false,
+    Charging = false,
+    Axis = "Horizontal"
+}
+local Modes = {"Horizontal", "Vertical", "Cross", "Sphere"}
+local ActiveParts = {}
+local Connections = {}
+local OrbitButtonRef = nil -- Reference for auto-updating button
+
+-- // PHYSICS ENGINE
+local function IsValidPart(part)
+    return part:IsA("BasePart") 
+        and not part.Anchored 
+        and not part:IsDescendantOf(Player.Character) 
+        and part.Mass < 5000 
+end
+
+--[[
+	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
+]]
+local Noclip = nil
+local Clip = nil
+
+function noclip()
+	Clip = false
+	local function Nocl()
+		if Clip == false and game.Players.LocalPlayer.Character ~= nil then
+			for _,v in pairs(game.Players.LocalPlayer.Character:GetDescendants()) do
+				if v:IsA('BasePart') and v.CanCollide and v.Name ~= floatName then
+					v.CanCollide = false
+				end
+			end
+		end
+		wait(0.21) -- basic optimization
+	end
+	Noclip = game:GetService('RunService').Stepped:Connect(Nocl)
+end
+
+function clip()
+	if Noclip then Noclip:Disconnect() end
+	Clip = true
+end
+
+noclip() -- to toggle noclip() and clip()
+
+-- Orbit Logic
+RunService.Heartbeat:Connect(function()
+    if not State.Orbiting then return end
+    
+    local char = Player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    -- Cleanup invalid parts
+    for i = #ActiveParts, 1, -1 do
+        local p = ActiveParts[i]
+        if not p or not p.Parent or p.Anchored then
+            table.remove(ActiveParts, i)
+        end
+    end
+
+    local count = #ActiveParts
+    if count == 0 then return end
+
+    local t = tick() * SETTINGS.OrbitSpeed
+    
+    for i, part in ipairs(ActiveParts) do
+        local bp = part:FindFirstChild("ProOrbitBP") or Instance.new("BodyPosition", part)
+        bp.Name = "ProOrbitBP"
+        bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+        bp.P = 25000
+        bp.D = 800
+
+        local bg = part:FindFirstChild("ProOrbitBG") or Instance.new("BodyGyro", part)
+        bg.Name = "ProOrbitBG"
+        bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+        bg.P = 3000
+
+        local angle = t + (i * (math.pi * 2 / count))
+        
+        -- Advanced Axis Math (Relative to Character Rotation)
+        local relativeOffset = Vector3.zero
+        
+        if State.Axis == "Horizontal" then
+            relativeOffset = Vector3.new(math.cos(angle) * SETTINGS.OrbitRadius, 0, math.sin(angle) * SETTINGS.OrbitRadius)
+        elseif State.Axis == "Vertical" then
+            relativeOffset = Vector3.new(0, math.cos(angle) * SETTINGS.OrbitRadius, math.sin(angle) * SETTINGS.OrbitRadius)
+        elseif State.Axis == "Cross" then
+            if i % 2 == 0 then
+                relativeOffset = Vector3.new(math.cos(angle) * SETTINGS.OrbitRadius, 0, math.sin(angle) * SETTINGS.OrbitRadius)
+            else
+                relativeOffset = Vector3.new(0, math.cos(angle) * SETTINGS.OrbitRadius, math.sin(angle) * SETTINGS.OrbitRadius)
+            end
+        elseif State.Axis == "Sphere" then
+            local phi = math.acos(1 - 2 * (i / count))
+            local theta = math.sqrt(count * math.pi) * phi + t
+            relativeOffset = Vector3.new(math.cos(theta) * math.sin(phi), math.sin(theta) * math.sin(phi), math.cos(phi)) * SETTINGS.OrbitRadius
+        end
+
+        -- Calculate World Position based on Character CFrame
+        local worldOffset = root.CFrame:VectorToWorldSpace(relativeOffset)
+        
+        bp.Position = root.Position + Vector3.new(0, SETTINGS.HeightOffset, 0) + worldOffset
+        bg.CFrame = CFrame.lookAt(part.Position, root.Position)
+
+        -- Visual effect
+        part.CanCollide = false
+        part.Transparency = 0.2
+    end
+end)
+
+-- Background Scanner
+task.spawn(function()
+    while true do
+        if State.Orbiting then
+            for _, v in ipairs(workspace:GetDescendants()) do
+                if IsValidPart(v) and not table.find(ActiveParts, v) then
+                    table.insert(ActiveParts, v)
+                    -- Unstick
+                    v.Velocity = Vector3.new(0, 10, 0)
+                end
+            end
+        end
+        task.wait(SETTINGS.ScanRate)
+    end
+end)
+
+------------------------------------------------------------
+-- // NOTIFICATION SYSTEM
+------------------------------------------------------------
+local ScreenGui = UILib:Create("ScreenGui", {
+    Name = "OrbitUtilityPro",
+    Parent = getGuiParent(),
+    ResetOnSpawn = false,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+})
+
+
+local NotifyContainer = UILib:Create("Frame", {
+    Parent = ScreenGui,
+    Size = UDim2.new(0, 300, 1, 0),
+    Position = UDim2.new(1, -320, -0.5, 0),
+    BackgroundTransparency = 1
+})
+
+
+local function Notify(title, text, duration)
+    PlaySound(SFX.Notification, 0.5)
+   
+    local card = UILib:Create("Frame", {
+        Parent = NotifyContainer,
+        Size = UDim2.new(1, 0, 0, 70),
+        Position = UDim2.new(1, 20, 1, -100), -- Start off screen
+        BackgroundColor3 = THEME.Panel,
+        BorderSizePixel = 0
+    })
+   
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", card)
+    stroke.Color = THEME.Accent
+    stroke.Transparency = 0.5
+   
+    local tLabel = UILib:Create("TextLabel", {
+        Parent = card,
+        Size = UDim2.new(1, -20, 0, 25),
+        Position = UDim2.new(0, 10, 0, 5),
+        BackgroundTransparency = 1,
+        Text = title,
+        TextColor3 = THEME.Accent,
+        Font = Enum.Font.GothamBold,
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Left
+    })
+   
+    local cLabel = UILib:Create("TextLabel", {
+        Parent = card,
+        Size = UDim2.new(1, -20, 0, 35),
+        Position = UDim2.new(0, 10, 0, 30),
+        BackgroundTransparency = 1,
+        Text = text,
+        TextColor3 = THEME.Text,
+        Font = Enum.Font.Gotham,
+        TextSize = 14,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true
+    })
+
+
+    -- Animation
+    TweenService:Create(card, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {Position = UDim2.new(0, 0, 1, -(#NotifyContainer:GetChildren() * 80))}):Play()
+   
+    task.delay(duration or 3, function()
+        TweenService:Create(card, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 1, Position = UDim2.new(1, 50, card.Position.Y.Scale, card.Position.Y.Offset)}):Play()
+        TweenService:Create(tLabel, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+        TweenService:Create(cLabel, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+        stroke:Destroy()
+        task.wait(0.5)
+        card:Destroy()
+    end)
+end
+
+    
+
+-- // MAIN GUI
+local MainFrame = UILib:Create("Frame", {
+    Name = "MainFrame",
+    Parent = ScreenGui,
+    Size = UDim2.new(0, 260, 0, 480),
+    Position = UDim2.new(0.05, 0, 0.5, -240),
+    BackgroundColor3 = THEME.Background,
+    BorderSizePixel = 0,
+    ClipsDescendants = true
+})
+UILib:AddCorner(MainFrame, 12)
+
+local MainStroke = Instance.new("UIStroke", MainFrame)
+MainStroke.Color = THEME.Accent
+MainStroke.Transparency = 0.6
+MainStroke.Thickness = 2
+UILib:AddBreathing(MainStroke)
+
+-- Title Bar
+local TitleBar = UILib:Create("Frame", {
+    Parent = MainFrame,
+    Size = UDim2.new(1, 0, 0, 45),
+    BackgroundColor3 = THEME.Panel,
+    BorderSizePixel = 0
+})
+UILib:AddCorner(TitleBar, 12) -- Matches top corners
+UILib:Gradient(TitleBar)
+
+local TitleText = UILib:Create("TextLabel", {
+    Parent = TitleBar,
+    Size = UDim2.new(1, 50, 1, 0),
+    Position = UDim2.new(0, 15, 0, 0),
+    Text = "ORBIT <b>PRO</b>",
+    TextColor3 = Color3.new(1,1,1),
+    RichText = true,
+    Font = Enum.Font.GothamBlack,
+    TextSize = 20,
+    BackgroundTransparency = 1,
+    TextXAlignment = Enum.TextXAlignment.Left
+})
+
+-- Dragging
+local dragToggle, dragStart, startPos
+TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragToggle = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+    end
+end)
+TitleBar.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then dragToggle = false end
+end)
+-- Function to create the amethyst blurry trail
+local function createTrail()
+    local trail = Instance.new("Frame")
+    trail.Name = "Trail"
+    trail.Parent = ScreenGui
+    trail.Size = MainFrame.Size
+    trail.Position = MainFrame.Position
+    trail.BackgroundColor3 = Color3.fromRGB(140, 60, 255) -- Amethyst
+    trail.BorderSizePixel = 0
+    trail.ZIndex = MainFrame.ZIndex - 1
+    trail.BackgroundTransparency = 0.6
+    
+    local corner = Instance.new("UICorner", trail)
+    corner.CornerRadius = UDim.new(0, 12)
+
+    -- Blur/Fade Animation
+    TweenService:Create(trail, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = MainFrame.Size + UDim2.new(0, 20, 0, 20),
+        Position = MainFrame.Position - UDim2.new(0, 10, 0, 10),
+        BackgroundTransparency = 1
+    }):Play()
+
+    game:GetService("Debris"):AddItem(trail, 0.4)
+end
+
+-- Updated Dragging Logic with Trail Trigger
+UserInputService.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement and dragToggle then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        createTrail() -- Triggers the amethyst trail
+    end
+end)
+
+-- Content Container
+local Content = UILib:Create("Frame", {
+    Parent = MainFrame,
+    Size = UDim2.new(1, -20, 1, -85), -- Adjusted for hint at bottom
+    Position = UDim2.new(0, 10, 0, 50),
+    BackgroundTransparency = 1
+})
+local UIList = Instance.new("UIListLayout", Content)
+UIList.SortOrder = Enum.SortOrder.LayoutOrder
+UIList.Padding = UDim.new(0, 10)
+
+-- // WIDGET BUILDER
+local function CreateButton(text, callback)
+    local btn = UILib:Create("TextButton", {
+        Parent = Content,
+        Size = UDim2.new(1, 0, 0, 45),
+        BackgroundColor3 = THEME.Panel,
+        Text = "",
+        AutoButtonColor = false,
+        BorderSizePixel = 0
+    })
+    UILib:AddCorner(btn, 8)
+    
+    local s = Instance.new("UIStroke", btn)
+    s.Color = THEME.AccentDark
+    s.Transparency = 0.5
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    UILib:AddBreathing(s)
+
+    local lbl = UILib:Create("TextLabel", {
+        Parent = btn,
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Text = text,
+        TextColor3 = THEME.Text,
+        Font = Enum.Font.GothamBold,
+        TextSize = 14
+    })
+
+    btn.MouseEnter:Connect(function()
+        PlaySound(SFX.Hover, 0.3)
+        TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = THEME.AccentDark}):Play()
+    end)
+    btn.MouseLeave:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = THEME.Panel}):Play()
+    end)
+
+    btn.MouseButton1Click:Connect(function()
+        PlaySound(SFX.Click, 1)
+        UILib:Ripple(btn)
+        Notify("Action", "Triggered: " .. text, 1) -- Notification on click
+        callback(btn, lbl)
+    end)
+
+    return btn, lbl
+end
+
+-- // FEATURES UI
+
+-- 1. Orbit Toggle
+local OrbitBtn, OrbitLbl = CreateButton("ENABLE ORBIT", function(btn, lbl)
+    State.Orbiting = not State.Orbiting
+    -- Update is handled by the Heartbeat check below to ensure sync
+end)
+OrbitButtonRef = OrbitLbl -- Save reference
+
+-- Reactive UI Loop for Orbit Button
+task.spawn(function()
+    while true do
+        if OrbitButtonRef then
+            if State.Orbiting then
+                OrbitButtonRef.Text = "DISABLE ORBIT"
+                OrbitButtonRef.TextColor3 = THEME.Success
+            else
+                OrbitButtonRef.Text = "ENABLE ORBIT"
+                OrbitButtonRef.TextColor3 = THEME.Text
+                -- Cleanup when disabled
+                if #ActiveParts > 0 then
+                    for _, p in ipairs(ActiveParts) do
+                        if p:FindFirstChild("ProOrbitBP") then p.ProOrbitBP:Destroy() end
+                        if p:FindFirstChild("ProOrbitBG") then p.ProOrbitBG:Destroy() end
+                        p.CanCollide = true
+                        p.Transparency = 0
+                    end
+                    table.clear(ActiveParts)
+                    Notify("System", "Orbit Disabled - Parts Released", 2)
+                end
+            end
+        end
+        task.wait(0.2)
+    end
+end)
+
+-- 2. Axis Switcher
+CreateButton("AXIS: HORIZONTAL", function(btn, lbl)
+    local idx = table.find(Modes, State.Axis) or 1
+    idx = (idx % #Modes) + 1
+    State.Axis = Modes[idx]
+    lbl.Text = "AXIS: " .. State.Axis:upper()
+end)
+
+-- 3. Anti-Fall
+CreateButton("ANTI-FALL: OFF", function(btn, lbl)
+    State.AntiFall = not State.AntiFall
+    if State.AntiFall then
+        if game.PlaceId == 189707 then -- Natural Disaster Survival ID
+            local function protect(char)
+                local r = char:WaitForChild("HumanoidRootPart", 5)
+                if not r then return end
+                Connections.AntiFall = RunService.Heartbeat:Connect(function()
+                    if not State.AntiFall then return end
+                    local oldVel = r.AssemblyLinearVelocity
+                    if r.Position.Y < -40 then -- Basic height check
+                        r.AssemblyLinearVelocity = Vector3.zero
+                        RunService.RenderStepped:Wait()
+                        r.AssemblyLinearVelocity = oldVel
+                        r.Position = r.Position + Vector3.new(0, 100, 0)
+                    end
+                end)
+            end
+            if Player.Character then protect(Player.Character) end
+            Connections.CharAdd = Player.CharacterAdded:Connect(protect)
+            lbl.Text = "ANTI-FALL: ON"
+            lbl.TextColor3 = THEME.Success
+        else
+            State.AntiFall = false
+            Notify("Error", "Anti-Fall optimized for NDS", 3)
+        end
+    else
+        if Connections.AntiFall then Connections.AntiFall:Disconnect() end
+        if Connections.CharAdd then Connections.CharAdd:Disconnect() end
+        lbl.Text = "ANTI-FALL: OFF"
+        lbl.TextColor3 = THEME.Text
+    end
+end)
+
+-- 4. Kamehameha
+local FireBtn, FireLbl = CreateButton("CHARGE ENERGY", function(btn, lbl)
+    if #ActiveParts == 0 then
+        Notify("Warning", "No parts collected to throw!", 2)
+        return
+    end
+
+    State.Charging = true
+    PlaySound(SFX.PowerUp, 1)
+    Notify("Kamehameha", "Charging... Click anywhere to fire!", 4)
+    
+    -- Visual Pulse
+    TweenService:Create(MainFrame, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {BackgroundColor3 = THEME.AccentDark}):Play()
+end)
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 and State.Charging then
+        State.Charging = false
+        State.Orbiting = false -- Stop orbiting to release
+        
+        -- Play Release Sound
+        PlaySound(SFX.Release, 1)
+
+        -- Reset UI Pulse
+        TweenService:Create(MainFrame, TweenInfo.new(0.5), {BackgroundColor3 = THEME.Background}):Play()
+        Notify("Kamehameha", "RELEASED!", 2)
+        
+        -- Physics Throw
+        local target = Mouse.Hit.Position
+        for _, part in ipairs(ActiveParts) do
+            if part and part.Parent then
+                if part:FindFirstChild("ProOrbitBP") then part.ProOrbitBP:Destroy() end
+                if part:FindFirstChild("ProOrbitBG") then part.ProOrbitBG:Destroy() end
+                
+                local bv = Instance.new("BodyVelocity")
+                bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                bv.Velocity = (target - part.Position).Unit * SETTINGS.ThrowVelocity
+                bv.Parent = part
+                Debris:AddItem(bv, 3)
+                
+                part.Transparency = 0
+                part.CanCollide = true
+            end
+        end
+        table.clear(ActiveParts)
+    end
+end)
+
+-- // SLIDERS (PRO FEATURE)
+local function CreateSlider(text, min, max, default, callback)
+    local frame = UILib:Create("Frame", {
+        Parent = Content,
+        Size = UDim2.new(1, 0, 0, 40),
+        BackgroundTransparency = 1
+    })
+    
+    local title = UILib:Create("TextLabel", {
+        Parent = frame,
+        Size = UDim2.new(1, 0, 0, 20),
+        BackgroundTransparency = 1,
+        Text = text .. ": " .. default,
+        TextColor3 = THEME.TextDim,
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left
+    })
+    
+    local bg = UILib:Create("TextButton", {
+        Parent = frame,
+        Size = UDim2.new(1, 0, 0, 6),
+        Position = UDim2.new(0, 0, 0, 25),
+        BackgroundColor3 = THEME.Panel,
+        AutoButtonColor = false,
+        Text = ""
+    })
+    UILib:AddCorner(bg, 100)
+    
+    local fill = UILib:Create("Frame", {
+        Parent = bg,
+        Size = UDim2.new((default - min)/(max - min), 0, 1, 0),
+        BackgroundColor3 = THEME.Accent
+    })
+    UILib:AddCorner(fill, 100)
+    
+    local dragging = false
+    
+    local function update(input)
+        local pos = math.clamp((input.Position.X - bg.AbsolutePosition.X) / bg.AbsoluteSize.X, 0, 1)
+        local val = math.floor(min + ((max - min) * pos))
+        
+        fill.Size = UDim2.new(pos, 0, 1, 0)
+        title.Text = text .. ": " .. val
+        callback(val)
+    end
+    
+    bg.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            update(input)
+        end
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            update(input)
+        end
+    end)
+end
+
+CreateSlider("SPEED", 5, 500, SETTINGS.OrbitSpeed, function(v) -- Max updated to 500
+    SETTINGS.OrbitSpeed = v 
+end)
+CreateSlider("RADIUS", 5, 500, SETTINGS.OrbitRadius, function(v) -- Max updated to 500
+    SETTINGS.OrbitRadius = v 
+end)
+
+-- // HINT & TOGGLE
+local Hint = UILib:Create("TextLabel", {
+    Parent = MainFrame,
+    Size = UDim2.new(1, 0, 0, 20),
+    Position = UDim2.new(0, 0, 1, -25),
+    BackgroundTransparency = 1,
+    Text = "Press [L-CTRL] to Toggle UI",
+    TextColor3 = THEME.TextDim,
+    Font = Enum.Font.Gotham,
+    TextSize = 10
+})
+
+local toggled = true
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if not gpe and input.KeyCode == Enum.KeyCode.LeftControl then
+        toggled = not toggled
+        PlaySound(SFX.Click, 1)
+        if toggled then
+            MainFrame.Visible = true
+            MainFrame.Size = UDim2.new(0, 260, 0, 0)
+            TweenService:Create(MainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Back), {Size = UDim2.new(0, 260, 0, 480)}):Play()
+        else
+            TweenService:Create(MainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad), {Size = UDim2.new(0, 260, 0, 0)}):Play()
+            task.wait(0.3)
+            if not toggled then MainFrame.Visible = false end
+        end
+    end
+end)
+
+--[[
+	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
+]]
+
+setclipboard("https://discord.gg/ypjMw5xmuj")
+local pid = game.PlaceId
+if pid ~= 189707 then
+    print("Error not found natural disasters survival game!")
+    return
+end
+local rs = game:GetService("RunService")
+local hb = rs.Heartbeat
+local rsd = rs.RenderStepped
+local lp = game.Players.LocalPlayer
+local z = Vector3.zero
+local function f(c)
+    local r = c:WaitForChild("HumanoidRootPart")
+    if r then
+        local con
+        con = hb:Connect(function()
+            if not r.Parent then
+                con:Disconnect()
+            end
+            local v = r.AssemblyLinearVelocity
+            r.AssemblyLinearVelocity = z
+            rsd:Wait()
+            r.AssemblyLinearVelocity = v
+        end)
+    end
+end
+f(lp.Character)
+lp.CharacterAdded:Connect(f)
+
+-- Startup Animation
+PlaySound(SFX.PowerUp, 0.5)
+MainFrame.Size = UDim2.new(0, 260, 0, 0)
+TweenService:Create(MainFrame, TweenInfo.new(0.5, Enum.EasingStyle.Elastic), {Size = UDim2.new(0, 260, 0, 480)}):Play()
+Notify("Pro Loaded", "Welcome, " .. Player.DisplayName, 5)
